@@ -1,0 +1,251 @@
+#include <Arduino.h>
+
+const int NUM_ACT = 6;
+
+const int PWM_CHANNELS[NUM_ACT] = {0,1,2,3,4,5};
+const int PWM_PINS[NUM_ACT]     = {7,8,9,10,11,12};
+const int ADC_PINS[NUM_ACT]     = {1,2,3,4,5,6};
+
+const int PWM_FREQ = 5000;
+const int PWM_RES  = 8;
+
+double Kp = 1.0;
+double target[NUM_ACT]  = {0,0,0,0,0,0};
+double lastPos[NUM_ACT] = {0,0,0,0,0,0};
+
+bool initialTargetsSet = false;
+
+double B[6][3] = {
+    { 241.0,  202.0,   0.0},
+    {-241.0,  202.0,   0.0},
+    {-296.0,  108.0,   0.0},
+    
+    { -55.0, -315.0,   0.0},
+    {  55.0, -315.0,   0.0},
+    { 296.0,  108.0,   0.0}
+};
+
+double P[6][3] = {
+    {  45.0,  245.0,   0.0},
+    { -45.0,  250.0,   0.0},
+    {-240.0,  -80.0,   0.0},
+    {-190.0, -145.0,   0.0},
+    { 190.0, -155.0,   0.0},
+    { 230.0,  -80.0,   0.0}
+};
+
+// ---------- Helper math ----------
+
+double deg2rad(double deg) {
+    return deg * M_PI / 180.0;
+}
+
+void mat3mulVec(const double M[3][3], const double v[3], double out[3]) {
+    for (int i = 0; i < 3; i++) {
+        out[i] = M[i][0]*v[0] + M[i][1]*v[1] + M[i][2]*v[2];
+    }
+}
+
+void stewart_inverse(
+    double x_mm, double y_mm, double z_mm,
+    double alpha_deg, double beta_deg, double gamma_deg,
+    double L[6]
+){
+    double a = deg2rad(alpha_deg);
+    double b = deg2rad(beta_deg);
+    double c = deg2rad(gamma_deg);
+
+    // 2) Rotation matrices
+    double Rx[3][3] = {
+        {1,        0,         0},
+        {0,  cos(a),   -sin(a)},
+        {0,  sin(a),    cos(a)}
+    };
+
+    double Ry[3][3] = {
+        { cos(b), 0, sin(b)},
+        {     0,  1,     0},
+        {-sin(b), 0, cos(b)}
+    };
+
+    double Rz[3][3] = {
+        { cos(c), -sin(c), 0},
+        { sin(c),  cos(c), 0},
+        {     0,       0,  1}
+    };
+
+    // R = Rz * Ry * Rx
+    double Rtemp[3][3];
+    double R[3][3];
+
+    // Rtemp = Rz * Ry
+    for(int i=0;i<3;i++){
+        for(int j=0;j<3;j++){
+            Rtemp[i][j] = 0;
+            for(int k=0;k<3;k++){
+                Rtemp[i][j] += Rz[i][k]*Ry[k][j];
+            }
+        }
+    }
+    // R = Rtemp * Rx
+    for(int i=0;i<3;i++){
+        for(int j=0;j<3;j++){
+            R[i][j] = 0;
+            for(int k=0;k<3;k++){
+                R[i][j] += Rtemp[i][k]*Rx[k][j];
+            }
+        }
+    }
+    double C[3] = {0,0,0};
+    for(int i=0;i<6;i++){
+        C[0] += P[i][0];
+        C[1] += P[i][1];
+        C[2] += P[i][2];
+    }
+    C[0] /= 6.0;
+    C[1] /= 6.0;
+    C[2] /= 6.0;
+
+    double T[3] = {x_mm, y_mm, z_mm};
+
+    double P_out[6][3];
+    for(int i=0;i<6;i++){
+        double Pc[3] = {
+            P[i][0] - C[0],
+            P[i][1] - C[1],
+            P[i][2] - C[2]
+        };
+
+        double Pr[3];
+        mat3mulVec(R, Pc, Pr);
+
+        P_out[i][0] = Pr[0] + C[0] + T[0];
+        P_out[i][1] = Pr[1] + C[1] + T[1];
+        P_out[i][2] = Pr[2] + C[2] + T[2];
+    }
+    for(int i=0;i<6;i++){
+        double dx = P_out[i][0] - B[i][0];
+        double dy = P_out[i][1] - B[i][1];
+        double dz = P_out[i][2] - B[i][2];
+        L[i] = sqrt(dx*dx + dy*dy + dz*dz);
+    }
+}
+
+double computePositionMM(int x)
+{
+    return -5.67079e-7 * x * x 
+           + 0.0451016 * x
+           + 0.084671;
+}
+
+double computePWM_pos(double x)
+{
+    return 0.111155 * x * x
+           + 2.62936 * x
+           + 149.58008;
+}
+
+double computePWM_neg(double x)
+{
+    return 0.00809031 * x * x
+           + 4.48407 * x
+           + 120.00476;
+}
+
+void setup()
+{
+    Serial.begin(115200);
+    delay(300);
+    while (Serial.available()) Serial.read();
+
+    for(int i=0;i<NUM_ACT;i++)
+    {
+        ledcAttachChannel(PWM_PINS[i], PWM_FREQ, PWM_RES, PWM_CHANNELS[i]);
+        ledcWriteChannel(PWM_CHANNELS[i],135);   // stop voltage
+    }
+
+    Serial.println("Stewart Platform Controller Ready");
+    Serial.println("Send: x_mm,y_mm,z_mm,alpha_deg,beta_deg,gamma_deg");
+}
+
+void loop()
+{
+    if (Serial.available())
+    {
+        String line = Serial.readStringUntil('\n');
+        double x_mm, y_mm, z_mm, a_deg, b_deg, g_deg;
+
+        if (sscanf(line.c_str(), "%lf, %lf, %lf, %lf, %lf, %lf",
+                   &x_mm, &y_mm, &z_mm, &a_deg, &b_deg, &g_deg) == 6)
+        {
+            double L[6];
+            stewart_inverse(x_mm, y_mm, z_mm, a_deg, b_deg, g_deg, L);
+            for(int i=0;i<NUM_ACT;i++)
+            {
+                target[i] = L[i]-325;
+            }
+
+        }
+    }
+
+
+    static unsigned long last = 0;
+    if(millis() - last >= 20)
+    {
+        last = millis();
+
+      
+        if(!initialTargetsSet)
+        {
+            for(int i=0;i<NUM_ACT;i++)
+            {
+                int raw = analogRead(ADC_PINS[i]);
+                double pos = computePositionMM(raw);
+                lastPos[i] = pos;
+                target[i]  = pos;
+            }
+            initialTargetsSet = true;
+        }
+
+        for(int i=0;i<NUM_ACT;i++)
+        {
+            int raw = analogRead(ADC_PINS[i]);
+            double pos = computePositionMM(raw);
+            lastPos[i] = pos;
+
+            double error = target[i] - pos;
+
+            if (fabs(error) < 1.0)
+            {
+                ledcWriteChannel(PWM_CHANNELS[i], 135);
+                continue;
+            }
+
+            double u = Kp * error;
+
+            double pwm = (u >= 0) ? computePWM_pos(u)
+                                  : computePWM_neg(u);
+
+            int duty = (int)pwm;
+
+            if(duty < 85) duty = 85;
+            if(duty > 190) duty = 190;
+
+            ledcWriteChannel((PWM_CHANNELS[i]), duty);
+        }
+      static unsigned long lastPrint = 0;
+
+if (millis() - lastPrint >= 300)
+    {
+    lastPrint = millis();
+
+    Serial.print(lastPos[0]); Serial.print(",");
+    Serial.print(lastPos[1]); Serial.print(",");
+    Serial.print(lastPos[2]); Serial.print(",");
+    Serial.print(lastPos[3]); Serial.print(",");
+    Serial.print(lastPos[4]); Serial.print(",");
+    Serial.println(lastPos[5]);
+    }
+      
+    }
+}

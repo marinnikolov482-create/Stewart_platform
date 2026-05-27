@@ -1,0 +1,122 @@
+unsigned long ask=0;
+const int NUM_ACT = 6;
+
+const int PWM_CHANNELS[NUM_ACT] = {0,1,2,3,4,5};
+const int PWM_PINS[NUM_ACT]     = {7,8,9,10,11,12};
+const int ADC_PINS[NUM_ACT]     = {1,2,3,4,5,6};
+
+const int PWM_FREQ = 5000;
+const int PWM_RES  = 8;
+
+double Kp = 1.0;
+double target[NUM_ACT]  = {0,0,0,0,0,0};
+double lastPos[NUM_ACT] = {0,0,0,0,0,0};
+
+bool initialTargetsSet = false;
+
+double computePositionMM(int x)
+{
+    return -5.67079e-7 * x * x 
+           + 0.0451016 * x
+           + 0.084671;
+}
+
+double computePWM_pos(double x)
+{
+    return 0.111155 * x * x
+           + 2.62936 * x
+           + 149.58008;
+}
+
+double computePWM_neg(double x)
+{
+    return 0.00809031 * x * x
+           + 4.48407 * x
+           + 120.00476;
+}
+void setup()
+{
+    Serial.begin(115200);
+    delay(300);
+    while (Serial.available()) Serial.read();
+
+    for(int i=0;i<NUM_ACT;i++)
+    {
+        ledcAttachChannel(PWM_PINS[i], PWM_FREQ, PWM_RES, PWM_CHANNELS[i]);
+        ledcWriteChannel(PWM_CHANNELS[i],135);  
+    }
+
+}
+
+void loop()
+{
+ 
+    if (Serial.available())
+    {
+        String line = Serial.readStringUntil('\n');
+        int a,b,c2,d,e,f;
+
+        if (sscanf(line.c_str(), "%d, %d, %d, %d, %d, %d",
+                   &a,&b,&c2,&d,&e,&f) == 6)
+        {
+            target[0] = a;
+            target[1] = b;
+            target[2] = c2;
+            target[3] = d;
+            target[4] = e;
+            target[5] = f;
+        }
+    }
+
+    static unsigned long last = 0;
+    if(millis() - last >= 20)
+    {
+        last = millis();
+
+        if(!initialTargetsSet)
+        {
+            for(int i=0;i<NUM_ACT;i++)
+            {
+                int raw = analogRead(ADC_PINS[i]);
+                double pos = computePositionMM(raw);
+                lastPos[i] = pos;
+                target[i]  = pos;
+            }
+            initialTargetsSet = true;
+        }
+
+        for(int i=0;i<NUM_ACT;i++)
+        {
+            int raw = analogRead(ADC_PINS[i]);
+            double pos = computePositionMM(raw);
+            lastPos[i] = pos;
+
+            double error = target[i] - pos;
+
+        
+            if (abs(error) < 1)
+            {
+                ledcWriteChannel(PWM_CHANNELS[i], 135);
+                continue;
+            }
+
+            double u = Kp * error;
+
+            double pwm = (u >= 0) ? computePWM_pos(u)
+                                  : computePWM_neg(u);
+
+            int duty = (int)pwm;
+
+            if(duty < 85) duty = 85;
+            if(duty > 190) duty = 190;
+
+            ledcWriteChannel(PWM_CHANNELS[i], duty);
+        }
+        if(millis()>=ask+500){
+        Serial.printf("%d,%d,%d,%d,%d,%d\n",
+                      (int)lastPos[0], (int)lastPos[1]+10, (int)lastPos[2]+20,
+                      (int)lastPos[3]+30, (int)lastPos[4]+40, (int)lastPos[5]+50);
+                      ask=millis();
+        }
+    }
+}

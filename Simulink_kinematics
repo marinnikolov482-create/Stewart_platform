@@ -1,0 +1,74 @@
+function [L1, L2, L3, L4, L5, L6] = stewart_inverse_cm_int(x_cm, y_cm, z_cm, alpha_deg, beta_deg, gamma_deg)
+
+B = [
+    241   202    0;
+   -241   202    0;
+   -296   108    0;
+    -55  -315    0;
+     55  -315    0;
+    296   108    0
+];
+
+P = [
+     45   245    0;
+    -45   250    0;
+   -240   -80    0;
+   -190  -145    0;
+    190  -155    0;
+    230   -80    0
+];
+
+%% Convert angles to radians
+a = deg2rad(alpha_deg);
+b = deg2rad(beta_deg);
+c = deg2rad(gamma_deg);
+
+%% Rotation matrix R = Rz * Ry * Rx
+Rx = [1 0 0;
+      0 cos(a) -sin(a);
+      0 sin(a)  cos(a)];
+
+Ry = [cos(b) 0 sin(b);
+      0      1 0;
+     -sin(b) 0 cos(b)];
+
+Rz = [cos(c) -sin(c) 0;
+      sin(c)  cos(c) 0;
+      0       0      1];
+
+R = Rz * Ry * Rx;
+
+%% Platform center
+C = mean(P, 1);
+
+%% Desired translation
+T = [x_cm, y_cm, z_cm];
+
+%% Transform top joints
+P_out = zeros(6,3);
+for i = 1:6
+    Pc = P(i,:) - C;
+    Pr = (R * Pc')';
+    P_out(i,:) = Pr + C + T;
+end
+
+%% Compute leg lengths
+L = zeros(6,1);
+for i = 1:6
+    L(i) = norm(P_out(i,:) - B(i,:));
+end
+
+%% Subtract 325 mm ONLY HERE
+L = L - 325;
+
+%% Convert to integer outputs
+L = int32(round(L));
+
+L1 = L(1);
+L2 = L(2);
+L3 = L(3);
+L4 = L(4);
+L5 = L(5);
+L6 = L(6);
+
+end

@@ -1,2 +1,2 @@
-# Stewart_platform
-Stewart platform inverse kinematics and control
+The code Control+kinematics works on its own directly in ESP32, the inputs are coordinates with origin the centre of the bottom platform, and have to be in this format: "%d, %d, %d, %d, %d, %d/n" (x,y,z,roll,pitch,yall). Example: 0,0,350,0,0,0/n or 0,0,350,0,0,0 the /n is a new line that is automatically put when using Arduino IDE.
+The codes Control_for_Simulink and Simulink_kinematics work together, and the C++ section goes in the ESP32, and the Simulink section goes in a MATLAB block in Simulink it needs some complementary blocks to enable the serial communication with ESP32, such as Compose String, string to ASKII, and Serial Send in that order. The communication protocol requires combining them into one string, converting to ASKII bytes, then formatting. The input consists of 6 Constant blocks that go into the inputs of the MATLAB block
